@@ -7,6 +7,9 @@ from kornia.filters import Laplacian, SpatialGradient, GaussianBlur2d
 from torch import Tensor
 import torch.fft
 import math
+import numpy as np
+import cv2
+from torchvision.utils import save_image
 
 ##########################################################################
 class UpsampleReshape_eval(torch.nn.Module):
@@ -69,53 +72,78 @@ class ConvLayer(torch.nn.Module):
 ##########################################################################
 '''
 before: sobel filter
-after: gassuain blur -> laplacian filter
+try-1: gassuain blur -> laplacian filter
+try-2: bilateral filter
 '''
 # update
-class EdgeDetect(nn.Module):
-    def __init__(self):
-        super(EdgeDetect, self).__init__()
-        self.gaussian_blur = GaussianBlur2d(kernel_size=(5, 5), sigma=(1.5, 1.5))
-        self.laplacian = Laplacian(kernel_size=3)
-    
-    def forward(self, x):
-        x_blurred = self.gaussian_blur(x)
-        x_edge = self.laplacian(x_blurred)
-        edge_magnitude = torch.abs(x_edge)
-        
-        return edge_magnitude
-    
-# original
 # class EdgeDetect(nn.Module):
 #     def __init__(self):
 #         super(EdgeDetect, self).__init__()
+#         self.gaussian_blur = GaussianBlur2d(kernel_size=(5, 5), sigma=(1.5, 1.5))
+#         self.laplacian = Laplacian(kernel_size=3)
+    
+#     def forward(self, x):
+#         x_blurred = self.gaussian_blur(x)
+#         x_edge = self.laplacian(x_blurred)
+#         edge_magnitude = torch.abs(x_edge)
         
-#         self.spatial = SpatialGradient('diff') # sobel필터가 default
-        
-#         # self.spatial = Laplacian(kernel_size=3) # sobel -> laplacian
-#         self.max_pool = nn.MaxPool2d(3, 1, 1)
+#         return edge_magnitude
+    
+# original
+class EdgeDetect(nn.Module):
+    def __init__(self):
+        super(EdgeDetect, self).__init__()
+        self.spatial = SpatialGradient('diff') 
+        self.max_pool = nn.MaxPool2d(3, 1, 1)
 
-#     def forward(self, x: Tensor) -> Tensor:
-#         s = self.spatial(x)
-#         dx, dy = s[:, :, 0, :, :], s[:, :, 1, :, :]
-#         u = torch.sqrt(torch.pow(dx, 2) + torch.pow(dy, 2))
-#         print('u', u)
-        
-#         y = self.max_pool(u)
-#         return y
+    def forward(self, x: Tensor) -> Tensor:
+        s = self.spatial(x)
+        dx, dy = s[:, :, 0, :, :], s[:, :, 1, :, :]
+        u = torch.sqrt(torch.pow(dx, 2) + torch.pow(dy, 2))
+        y = self.max_pool(u)
+        return y
 
 ##########################################################################
+# Base Part -> 저주파 영역, 이거 사용 x
+class LowPassFilter(nn.Module):
+    def __init__(self, kernel_size=5, sigma=1.0):
+        super(LowPassFilter, self).__init__()
+        self.kernel_size = kernel_size
+        self.sigma = sigma
+
+    def forward(self, x):
+        x_np = x.cpu().detach().numpy()
+        batch_size, channels, height, width = x_np.shape
+        filtered = []
+
+        for i in range(batch_size):
+            channel_filtered = []
+            for c in range(channels):
+                channel = x_np[i, c]
+                blurred = cv2.GaussianBlur(channel, (self.kernel_size, self.kernel_size), self.sigma)
+                channel_filtered.append(blurred)
+            filtered.append(np.stack(channel_filtered, axis=0))
+
+        filtered = np.stack(filtered, axis=0)
+        filtered_tensor = torch.tensor(filtered, device=x.device, dtype=x.dtype)
+        return filtered_tensor
+
+
+# Edge Detection -> 고주파 영역
 class attention(nn.Module):
     def __init__(self):
         super(attention, self).__init__()
         self.ed = EdgeDetect()
-
+        # self.lf = LowPassFilter()
+        
     def forward(self, ir, rgb):
-
         ir_attention = ((ir * 127.5) + 127.5) / 255
         rgb_attention = ((rgb * 127.5) + 127.5) / 255
+        
+        # Detail Content        
         ir_edgemap = self.ed(ir_attention)
         rgb_edgemap = self.ed(rgb_attention)
+        
         edgemap_ir = ir_edgemap / (ir_edgemap + rgb_edgemap + 0.00001)
         edgemap_ir = (edgemap_ir - 0.5) * 2
 
@@ -241,10 +269,8 @@ class Reconstruction(nn.Module):
 
 ##########################################################################
 class GELU(nn.Module):
-
     def forward(self, x):
         return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
-
 
 # SENet -> custom
 class SEblock(nn.Module):
@@ -266,7 +292,54 @@ class SEblock(nn.Module):
         out = out.view(out.size(0), out.size(1), 1, 1)
         return x * out
 
-# Residual Feature Distillation Block
+# Residual Feature Distillation Block + SEblock
+# class RFDB(nn.Module):
+#     def __init__(self, distillation_rate=0.25):
+#         super(RFDB, self).__init__()
+#         in_channels = 32
+#         self.dc = self.distilled_channels = in_channels//2 # 16
+#         self.rc = self.remaining_channels = in_channels # 32
+#         self.c1_d = nn.Conv2d(in_channels, self.dc, kernel_size=1, padding=0)
+#         self.c1_r = nn.Conv2d(in_channels, self.rc, kernel_size=3, padding=1)
+#         self.c2_d = nn.Conv2d(self.remaining_channels, self.dc, kernel_size=1, padding=0)
+#         self.c2_r = nn.Conv2d(self.remaining_channels, self.rc, kernel_size=3, padding=1)
+#         self.c3_d = nn.Conv2d(self.remaining_channels, self.dc, kernel_size=1, padding=0)
+#         self.c3_r = nn.Conv2d(self.remaining_channels, self.rc, kernel_size=3, padding=1)
+#         self.c4 = nn.Conv2d(self.remaining_channels, self.dc, kernel_size=3, padding=1)
+#         self.act = GELU()
+#         self.c5 = nn.Conv2d(self.dc*4, in_channels, kernel_size=1, padding=0)
+#         self.esa = ESA(in_channels, nn.Conv2d)
+
+#         # addtional
+#         self.r_c1_seblock = SEblock(in_channels=in_channels) # distilled_c1
+#         self.r_c2_seblock = SEblock(in_channels=in_channels) # distilled_c2
+#         self.r_c3_seblcok = SEblock(in_channels=in_channels) # distilled_c3
+#         self.r_c4_seblock = SEblock(in_channels=in_channels) # distilled_c4
+
+#     def forward(self, input):
+#         c1_seblock = self.r_c1_seblock(input) # SEblock 
+#         distilled_c1 = self.act(self.c1_d(c1_seblock+input)) # SEblock + Residual
+#         r_c1 = (self.c1_r(c1_seblock)) # 3x3 32개 filter 
+#         r_c1 = self.act(c1_seblock+r_c1) # Residual 
+
+#         c2_seblock = self.r_c2_seblock(r_c1) # SEblock 적용
+#         distilled_c2 = self.act(self.c2_d(c2_seblock+r_c1)) # SEblock + Residual
+#         r_c2 = (self.c2_r(c2_seblock)) # 3x3 32개 filter
+#         r_c2 = self.act(c2_seblock+r_c2) # Residual
+
+#         c3_seblock = self.r_c3_seblcok(r_c2) # SEblock 적용
+#         distilled_c3 = self.act(self.c3_d(c3_seblock+r_c2)) # SEblock + Residual
+#         r_c3 = (self.c3_r(c3_seblock)) # 3x3 32개 filter
+#         r_c3 = self.act(c3_seblock+r_c3) # Residual
+        
+#         c4_seblock = self.r_c4_seblock(r_c3) # SEblcok
+#         distilled_c4 = self.act(self.c4(c4_seblock+r_c3)) # SEblock + Residual
+
+#         out = torch.cat([distilled_c1, distilled_c2, distilled_c3, distilled_c4], dim=1)
+#         out_fused = self.esa(self.c5(out))
+
+#         return out_fused
+
 class RFDB(nn.Module):
     def __init__(self, distillation_rate=0.25):
         super(RFDB, self).__init__()
@@ -284,35 +357,26 @@ class RFDB(nn.Module):
         self.c5 = nn.Conv2d(self.dc*4, in_channels, kernel_size=1, padding=0)
         self.esa = ESA(in_channels, nn.Conv2d)
 
-        # addtional
-        self.r_c1_seblock = SEblock(in_channels=in_channels) # distilled_c1
-        self.r_c2_seblock = SEblock(in_channels=in_channels) # distilled_c2
-        self.r_c3_seblcok = SEblock(in_channels=in_channels) # distilled_c3
-
     def forward(self, input):
-        c1_seblock = self.r_c1_seblock(input)
-        distilled_c1 = self.act(self.c1_d(c1_seblock))
-        r_c1 = (self.c1_r(c1_seblock))
-        r_c1 = self.act(r_c1+c1_seblock)
+        distilled_c1 = self.act(self.c1_d(input))
+        r_c1 = (self.c1_r(input))
+        r_c1 = self.act(r_c1+input)
 
-        c2_seblock = self.r_c2_seblock(r_c1)
-        distilled_c2 = self.act(self.c2_d(c2_seblock))
-        r_c2 = (self.c2_r(c2_seblock))
-        r_c2 = self.act(r_c2+c2_seblock)
+        distilled_c2 = self.act(self.c2_d(r_c1))
+        r_c2 = (self.c2_r(r_c1))
+        r_c2 = self.act(r_c2+r_c1)
 
-        c3_seblock = self.r_c3_seblcok(r_c2)
-        distilled_c3 = self.act(self.c3_d(c3_seblock))
-        r_c3 = (self.c3_r(c3_seblock))
-        r_c3 = self.act(r_c3+c3_seblock)
-        
+        distilled_c3 = self.act(self.c3_d(r_c2))
+        r_c3 = (self.c3_r(r_c2))
+        r_c3 = self.act(r_c3+r_c2)
+
         r_c4 = self.act(self.c4(r_c3))
 
         out = torch.cat([distilled_c1, distilled_c2, distilled_c3, r_c4], dim=1)
         out_fused = self.esa(self.c5(out))
 
         return out_fused
-
-
+    
 class ESA(nn.Module):
     def __init__(self, n_feats, conv):
         super(ESA, self).__init__()
@@ -493,10 +557,10 @@ class CMTFusion(nn.Module):
         self.fft = SpectralTransform(32, 32)
 
 
-    def forward(self, rgb, ir):
-
+    def forward(self, rgb: torch.Tensor, ir: torch.Tensor): # size: [2, 1, 256, 256]
         edgemap_ir, edgemap_rgb = self.attention(ir, rgb)
-
+        
+        # input은 ir/rgb 따로따로임
         ir_input = torch.cat([ir, edgemap_ir], 1)
         rgb_input = torch.cat([rgb, edgemap_rgb], 1)
 
@@ -520,11 +584,19 @@ class CMTFusion(nn.Module):
         ir_level_3 = self.ir_encoder_level3(ir_level_3)
         rgb_level_3 = self.rgb_encoder_level3(rgb_level_3)
 
-        ir_level_2 = self.ir_encoder_level2(ir_level_2)
-        rgb_level_2 = self.rgb_encoder_level2(rgb_level_2)
+        ir_level_2 = self.ir_encoder_level2(ir_level_2) # Level 2의 RFDB의 Output
+        rgb_level_2 = self.rgb_encoder_level2(rgb_level_2) # Level 2의 RFDB의 Output
+        
+        
 
         ir_level_1 = self.ir_encoder_level1(ir_level_1)
         rgb_level_1 = self.rgb_encoder_level1(rgb_level_1)
+        
+        #  f^2_vis, f^2_ir
+        f_2_vis_out_cp_v = torch.mean(rgb_level_1, dim=1)
+        f_2_ir_out_cp_v = torch.mean(ir_level_1, dim=1)
+        save_image(f_2_vis_out_cp_v, "./case2_f_2_vis.png", nrow=1, normalize=True)
+        save_image(f_2_ir_out_cp_v, "./case2_f_2_ir_.png", nrow=1, normalize=True)
         ##################################################Level3
 
         rgb_level_3_1, ir_level_3_1 = self.Stage3_1(rgb_level_3, ir_level_3)

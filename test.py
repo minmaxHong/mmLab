@@ -9,9 +9,9 @@ import argparse
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out_path', type=str, default='./fusion_outputs/', help='path of fused image')
-    parser.add_argument('--test_images', type=str, default='/home/minmaxhong/Dataset/ROADSCENE', help='path of source image')
+    parser.add_argument('--test_images', type=str, default='/home/minmaxhong/catkin_ws/src/mmLab/case2', help='path of source image')
     parser.add_argument('--dataset_name', type=str, default='basic', help='dataset name')
-    parser.add_argument('--weights', type=str, default='/home/minmaxhong/catkin_ws/src/CMTFusion/saved_models/SENet/model_fusion19.pth', help='dataset name')
+    parser.add_argument('--weights', type=str, default='/home/minmaxhong/catkin_ws/src/mmLab/made_pt/pretrained.pth', help='dataset name')
     args = parser.parse_args()
 
     if os.path.exists(args.out_path) is False:
@@ -23,7 +23,7 @@ def run():
 
     fusion_model = torch.nn.DataParallel(CMTFusion(), device_ids=[0])
     fusion_model.load_state_dict(
-        torch.load("%s" % (args.weights)))
+        torch.load(args.weights, map_location=device))
     print("===>Testing using weights: ", args.weights)
     fusion_model.cuda()
     fusion_model.eval()
@@ -45,6 +45,7 @@ def run():
 
     print('Done......')
 
-
 if __name__ == '__main__':
     run()
+    
+    2, 1.48

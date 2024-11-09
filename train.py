@@ -50,7 +50,7 @@ def main():
 
     dataset = utils.Customdataset(transform=trans, rgb_dataset=args.rgb_dataset, ir_dataset=args.ir_dataset)
     
-    train_dataloader = torch.utils.data.DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+    train_dataloader = torch.utils.data.DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=True, num_workers=6) # trans가 이미 적용된 형태
     print('===> Loading datasets')
 
     ######### Model ###########
@@ -59,7 +59,7 @@ def main():
         print("\n\nLet's use", torch.cuda.device_count(), "GPUs!\n\n")
 
     torch.cuda.set_device('cuda:0')
-    fusion_model = nn.DataParallel(CMTFusion(), device_ids=[0,1])  # [0], device_ids
+    fusion_model = nn.DataParallel(CMTFusion(), device_ids=[0, 1])  # [0], device_ids
     # fusion_model = CMTFusion()
     fusion_model.cuda()
 
@@ -76,7 +76,7 @@ def main():
     if os.path.exists(out_path) is False:
         os.mkdir(out_path)
     
-    weight_path = './saved_models/SENetLaplacian/'
+    weight_path = './saved_models/cmtfusion/'
     if not os.path.exists(weight_path):
         os.makedirs(weight_path)
     
@@ -135,7 +135,7 @@ def main():
                 )
             )
 
-        torch.save(fusion_model.state_dict(), "./saved_models/%s/model_fusion%d.pth" % ("SENet", epoch))
+        torch.save(fusion_model.state_dict(), "./saved_models/%s/model_fusion%d.pth" % ("cmtfusion", epoch))
 
 if __name__ == "__main__":
     main()
